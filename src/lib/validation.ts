@@ -1,0 +1,97 @@
+import { z } from 'zod';
+
+// --- Schemas ---
+
+export const signupSchema = z.object({
+  userId: z.string().uuid(),
+  companyName: z
+    .string()
+    .min(1, 'Company name is required')
+    .max(100, 'Company name must be 100 characters or less')
+    .regex(/^[a-zA-Z0-9\s\-&'.]+$/, 'Company name contains invalid characters'),
+  fullName: z
+    .string()
+    .min(1, 'Full name is required')
+    .max(100, 'Full name must be 100 characters or less'),
+});
+
+export const visualizeSchema = z.object({
+  productId: z.string().uuid(),
+  originalImagePath: z.string().min(1, 'Image path is required'),
+  customerName: z.string().max(200).nullish(),
+  customerAddress: z.string().max(500).nullish(),
+  perspective: z.enum(['exterior', 'interior']).default('exterior'),
+  category: z.enum(['window', 'sliding_glass_door', 'entry_door']).nullish(),
+});
+
+export const shareSchema = z.object({
+  visualization_id: z.string().uuid(),
+});
+
+export const proposalSchema = z.object({
+  visualization_id: z.string().uuid(),
+});
+
+export const inviteAcceptSchema = z.object({
+  token: z
+    .string()
+    .min(32)
+    .max(128)
+    .regex(/^[a-f0-9]+$/, 'Invalid token format'),
+  userId: z.string().uuid(),
+  fullName: z
+    .string()
+    .min(1, 'Full name is required')
+    .max(100, 'Full name must be 100 characters or less'),
+});
+
+export const inviteValidateSchema = z.object({
+  token: z
+    .string()
+    .min(32)
+    .max(128)
+    .regex(/^[a-f0-9]+$/, 'Invalid token format'),
+});
+
+export const catalogSeedSchema = z.object({
+  products: z
+    .array(
+      z.object({
+        category: z.enum(['window', 'sliding_glass_door', 'entry_door']),
+        brand: z.string().max(100),
+        line: z.string().max(200).nullish(),
+        name: z.string().max(300).nullish(),
+        color: z.string().max(100),
+        material: z.string().max(100).nullish(),
+        description: z.string().max(2000).nullish(),
+        reference_image_url: z.string().url().max(2000).nullish(),
+        attributes: z.record(z.string(), z.unknown()).nullish(),
+      })
+    )
+    .min(1, 'At least one product is required')
+    .max(500, 'Maximum 500 products per request'),
+});
+
+export const inviteSendSchema = z.object({
+  email: z.string().email('A valid email address is required'),
+  role: z.enum(['rep', 'admin']),
+});
+
+export const billingCheckoutSchema = z.object({
+  plan: z.enum(['pay_per_use', 'starter', 'pro', 'business', 'business_pro']),
+});
+
+// --- Helper ---
+
+type ParseResult<T> =
+  | { success: true; data: T }
+  | { success: false; error: string };
+
+export function parseBody<T>(schema: z.ZodSchema<T>, data: unknown): ParseResult<T> {
+  const result = schema.safeParse(data);
+  if (result.success) {
+    return { success: true, data: result.data };
+  }
+  const message = result.error.issues.map((e) => e.message).join(', ');
+  return { success: false, error: message };
+}

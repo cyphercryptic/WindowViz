@@ -1,0 +1,537 @@
+'use client';
+
+import { useEffect, useState } from 'react';
+import { useSearchParams, useRouter } from 'next/navigation';
+import { createClient } from '@/lib/supabase/client';
+import { useUser } from '@/hooks/useUser';
+import { PhotoUploader } from '@/components/visualize/PhotoUploader';
+import { ProductConfigurator } from '@/components/visualize/ProductConfigurator';
+import { CategorySelector } from '@/components/visualize/CategorySelector';
+import { BeforeAfterSlider } from '@/components/visualize/BeforeAfterSlider';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Card, CardContent } from '@/components/ui/card';
+import { ProductSwatch } from '@/components/catalog/ProductSwatch';
+import { Sparkles, RotateCcw, Download, ArrowLeft, ChevronLeft, ChevronRight, Zap, FolderOpen } from 'lucide-react';
+import { toast } from 'sonner';
+import type { Product, ProductCategory } from '@/types';
+import { CATEGORY_LABELS } from '@/types';
+
+interface UsageInfo {
+  used: number;
+  limit: number;
+  plan: string;
+  allowed: boolean;
+}
+
+type Step = 'upload' | 'category' | 'configure' | 'generating' | 'result';
+
+interface VisualizationResult {
+  id: string;
+  resultUrl: string;
+  product: Product;
+  processingTimeMs: number;
+}
+
+/** Extract the product line from the product name (e.g. "GAF Timberline HDZ - Charcoal" → "Timberline HDZ") */
+function extractLine(product: Product): string {
+  let rest = product.name.startsWith(product.brand)
+    ? product.name.slice(product.brand.length).trim()
+    : product.name;
+  const dashIdx = rest.indexOf(' - ');
+  if (dashIdx > 0) rest = rest.slice(0, dashIdx).trim();
+  return rest || product.name;
+}
+
+export default function VisualizePage() {
+  const { profile } = useUser();
+  const supabase = createClient();
+  const searchParams = useSearchParams();
+  const router = useRouter();
+
+  const [step, setStep] = useState<Step>('upload');
+  const [products, setProducts] = useState<Product[]>([]);
+  const [selectedProductId, setSelectedProductId] = useState('');
+  const [customerName, setCustomerName] = useState('');
+  const [customerAddress, setCustomerAddress] = useState('');
+  const [category, setCategory] = useState<ProductCategory | null>(null);
+
+  // Image state
+  const [preview, setPreview] = useState<string | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [originalImagePath, setOriginalImagePath] = useState('');
+  const [originalImageUrl, setOriginalImageUrl] = useState('');
+
+  // Result state — track all visualizations done on the same photo
+  const [results, setResults] = useState<VisualizationResult[]>([]);
+  const [activeResultIndex, setActiveResultIndex] = useState(0);
+  const [generating, setGenerating] = useState(false);
+  const [usage, setUsage] = useState<UsageInfo | null>(null);
+
+  const activeResult = results[activeResultIndex] ?? null;
+
+  useEffect(() => {
+    loadProducts();
+    loadUsage();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Pre-load photo from query params (e.g. coming from gallery "Add a Visual")
+  useEffect(() => {
+    const photoPath = searchParams.get('photo');
+    if (photoPath) {
+      const { data } = supabase.storage.from('house-photos').getPublicUrl(photoPath);
+      setOriginalImagePath(photoPath);
+      setOriginalImageUrl(data.publicUrl);
+      setPreview(data.publicUrl);
+      setStep('category');
+
+      const name = searchParams.get('customer');
+      const address = searchParams.get('address');
+      if (name) setCustomerName(name);
+      if (address) setCustomerAddress(address);
+    }
+  }, [searchParams]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function loadProducts() {
+    const { data } = await supabase
+      .from('products')
+      .select('*')
+      .eq('is_active', true)
+      .order('brand')
+      .order('name');
+    setProducts(data || []);
+  }
+
+  async function loadUsage() {
+    const res = await fetch('/api/billing/usage');
+    if (res.ok) {
+      setUsage(await res.json());
+    }
+  }
+
+  async function handlePhotoUpload(file: File) {
+    setUploading(true);
+
+    // Show local preview immediately
+    const reader = new FileReader();
+    reader.onload = (e) => setPreview(e.target?.result as string);
+    reader.readAsDataURL(file);
+
+    const formData = new FormData();
+    formData.append('file', file);
+
+    const res = await fetch('/api/upload', { method: 'POST', body: formData });
+
+    if (!res.ok) {
+      toast.error('Failed to upload photo');
+      setPreview(null);
+      setUploading(false);
+      return;
+    }
+
+    const data = await res.json();
+    setOriginalImagePath(data.path);
+    setOriginalImageUrl(data.url);
+    setUploading(false);
+    setStep('category');
+  }
+
+  function handleClearPhoto() {
+    setPreview(null);
+    setOriginalImagePath('');
+    setOriginalImageUrl('');
+    setCategory(null);
+    setStep('upload');
+  }
+
+  async function handleVisualize() {
+    if (!selectedProductId || !originalImagePath) {
+      toast.error('Please select a product and upload a photo');
+      return;
+    }
+
+    setStep('generating');
+    setGenerating(true);
+
+    try {
+      const res = await fetch('/api/visualize', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          productId: selectedProductId,
+          originalImagePath,
+          customerName: customerName || null,
+          customerAddress: customerAddress || null,
+          category,
+        }),
+      });
+
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || 'Visualization failed');
+      }
+
+      const data = await res.json();
+      const product = products.find((p) => p.id === selectedProductId)!;
+      const newResult: VisualizationResult = {
+        id: data.id,
+        resultUrl: data.resultUrl,
+        product,
+        processingTimeMs: data.processingTimeMs,
+      };
+
+      setResults((prev) => [...prev, newResult]);
+      setActiveResultIndex(results.length); // point to the newly added one
+      setStep('result');
+      toast.success(`Visualization complete in ${(data.processingTimeMs / 1000).toFixed(1)}s`);
+      loadUsage(); // refresh usage count
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Visualization failed');
+      setStep('configure');
+    } finally {
+      setGenerating(false);
+    }
+  }
+
+  function handleTryAnother() {
+    setSelectedProductId('');
+    setStep('configure');
+  }
+
+  function handleStartOver() {
+    setPreview(null);
+    setOriginalImagePath('');
+    setOriginalImageUrl('');
+    setSelectedProductId('');
+    setCustomerName('');
+    setCustomerAddress('');
+    setCategory(null);
+    setResults([]);
+    setActiveResultIndex(0);
+    setStep('upload');
+  }
+
+  async function handleDownload() {
+    if (!activeResult) return;
+    const response = await fetch(activeResult.resultUrl);
+    const blob = await response.blob();
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `window-door-visualization-${activeResult.id}.png`;
+    a.click();
+    window.URL.revokeObjectURL(url);
+  }
+
+  return (
+    <div className="mx-auto max-w-2xl">
+      <div className="mb-6">
+        <h1 className="text-2xl font-bold">Window & Door Visualization</h1>
+        <p className="text-brand-brown/50">
+          {step === 'upload' && 'Upload a photo of the house to get started'}
+          {step === 'category' && 'What type of product are you visualizing?'}
+          {step === 'configure' && 'Select a product to visualize'}
+          {step === 'generating' && 'AI is generating your visualization...'}
+          {step === 'result' && 'Drag the slider to compare before & after'}
+        </p>
+      </div>
+
+      {/* Demo user banner */}
+      {profile?.role === 'demo' && (
+        <div className="mb-6 rounded-xl bg-gradient-to-r from-brand-orange/10 to-brand-peach-light border border-brand-orange/20 p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+          <div>
+            <p className="font-semibold text-brand-brown">Demo Account</p>
+            <p className="text-sm text-brand-brown/60">
+              {usage ? `${usage.used} of ${usage.limit} free visualizations used` : 'Limited visualizations available'}
+            </p>
+          </div>
+          <a
+            href="mailto:support@windowviz.com?subject=Interested%20in%20WindowViz"
+            className="px-4 py-2 bg-brand-orange text-white rounded-lg font-medium text-sm hover:opacity-90 transition-opacity whitespace-nowrap"
+          >
+            Contact Sales
+          </a>
+        </div>
+      )}
+
+      {/* Step 1: Upload */}
+      {step === 'upload' && (
+        <PhotoUploader
+          onUpload={handlePhotoUpload}
+          preview={preview}
+          uploading={uploading}
+          onClear={handleClearPhoto}
+        />
+      )}
+
+      {/* Step 2: Select Category */}
+      {step === 'category' && (
+        <div className="space-y-6">
+          <PhotoUploader
+            onUpload={handlePhotoUpload}
+            preview={preview}
+            uploading={false}
+            onClear={handleClearPhoto}
+          />
+          <CategorySelector
+            onSelect={(c) => {
+              setCategory(c);
+              setSelectedProductId('');
+              setStep('configure');
+            }}
+          />
+        </div>
+      )}
+
+      {/* Step 4: Configure */}
+      {step === 'configure' && (
+        <div className="space-y-6">
+          {/* Photo preview */}
+          <PhotoUploader
+            onUpload={handlePhotoUpload}
+            preview={preview}
+            uploading={false}
+            onClear={handleClearPhoto}
+          />
+
+          {/* Breadcrumb for category */}
+          {category && (
+            <div className="flex items-center gap-2 text-sm text-brand-brown/50">
+              <button
+                type="button"
+                onClick={() => setStep('category')}
+                className="text-brand-orange hover:underline"
+              >
+                ← {CATEGORY_LABELS[category]}
+              </button>
+            </div>
+          )}
+
+          {/* Previous results thumbnails */}
+          {results.length > 0 && (
+            <Card>
+              <CardContent className="p-4">
+                <p className="text-sm font-medium text-brand-brown/50 mb-3">
+                  Previous visualizations on this photo ({results.length})
+                </p>
+                <div className="flex gap-2 overflow-x-auto pb-1">
+                  {results.map((r, i) => (
+                    <button
+                      key={r.id}
+                      onClick={() => {
+                        setActiveResultIndex(i);
+                        setStep('result');
+                      }}
+                      className="flex-shrink-0 rounded-lg border-2 border-brand-peach/30 hover:border-brand-orange overflow-hidden transition-colors"
+                    >
+                      <div className="w-28">
+                        <img
+                          src={r.resultUrl}
+                          alt={`${r.product.name} visualization`}
+                          className="w-full h-16 object-cover"
+                        />
+                        <div className="px-2 py-1 bg-brand-cream">
+                          <p className="text-[11px] font-medium truncate">{r.product.color}</p>
+                          <p className="text-[10px] text-brand-brown/40 truncate">{r.product.brand}</p>
+                        </div>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
+          <Card>
+            <CardContent className="space-y-4 p-6">
+              {/* Product configurator */}
+              <div className="space-y-2">
+                <Label className="text-base font-medium">Configure Product</Label>
+                {products.length === 0 ? (
+                  <p className="text-sm text-amber-600">
+                    No products in catalog yet. Ask your admin to add products.
+                  </p>
+                ) : category ? (
+                  <ProductConfigurator
+                    products={products}
+                    category={category}
+                    selectedId={selectedProductId}
+                    onSelect={setSelectedProductId}
+                  />
+                ) : (
+                  <p className="text-sm text-amber-600">
+                    Please select a category first.
+                  </p>
+                )}
+              </div>
+
+              {/* Optional customer info (hidden for demo users) */}
+              {profile?.role !== 'demo' && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="customerName" className="text-sm text-brand-brown/50">
+                      Customer Name (optional)
+                    </Label>
+                    <Input
+                      id="customerName"
+                      placeholder="John Smith"
+                      value={customerName}
+                      onChange={(e) => setCustomerName(e.target.value)}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="customerAddress" className="text-sm text-brand-brown/50">
+                      Address (optional)
+                    </Label>
+                    <Input
+                      id="customerAddress"
+                      placeholder="123 Main St"
+                      value={customerAddress}
+                      onChange={(e) => setCustomerAddress(e.target.value)}
+                    />
+                  </div>
+                </div>
+              )}
+
+              {/* Usage indicator */}
+              {usage && (
+                <div className={`flex items-center gap-2 text-sm rounded-lg px-3 py-2 ${
+                  !usage.allowed ? 'bg-red-50 text-red-700' : 'bg-brand-peach-light text-brand-brown/60'
+                }`}>
+                  <Zap className="h-4 w-4" />
+                  {usage.limit === -1 ? (
+                    <span>{usage.used} visualizations used this period</span>
+                  ) : (
+                    <span>{usage.used} / {usage.limit} visualizations used this period</span>
+                  )}
+                </div>
+              )}
+
+              {/* Visualize button */}
+              <Button
+                size="lg"
+                className="w-full h-14 text-lg"
+                onClick={handleVisualize}
+                disabled={!selectedProductId || (usage !== null && !usage.allowed)}
+              >
+                <Sparkles className="mr-2 h-5 w-5" />
+                {usage && !usage.allowed
+                  ? (profile?.role === 'demo' ? 'Demo Limit Reached — Contact Sales' : 'Limit Reached — Upgrade Plan')
+                  : 'Generate Visualization'}
+              </Button>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {/* Step 3: Generating */}
+      {step === 'generating' && (
+        <div className="flex flex-col items-center justify-center py-20">
+          <div className="relative mb-6">
+            <div className="h-20 w-20 animate-spin rounded-full border-4 border-brand-orange border-t-transparent" />
+            <Sparkles className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 h-8 w-8 text-brand-orange animate-pulse" />
+          </div>
+          <h2 className="text-xl font-semibold mb-2">Generating Your Visualization</h2>
+          <p className="text-brand-brown/50 text-center max-w-md">
+            Our AI is visualizing your new product on the photo. This usually takes 15-25 seconds.
+          </p>
+        </div>
+      )}
+
+      {/* Step 4: Result */}
+      {step === 'result' && activeResult && (
+        <div className="space-y-4">
+          {/* Current product label */}
+          <div className="flex items-center gap-3 px-1">
+            <ProductSwatch
+              brand={activeResult.product.brand}
+              line={extractLine(activeResult.product)}
+              color={activeResult.product.color}
+              swatchUrl={activeResult.product.swatch_url}
+              className="h-10 w-10 rounded-lg border shadow-sm flex-shrink-0"
+            />
+            <div>
+              <p className="font-semibold text-brand-brown">{activeResult.product.name}</p>
+              <p className="text-sm text-brand-brown/50">{activeResult.product.color}</p>
+            </div>
+          </div>
+
+          <BeforeAfterSlider
+            beforeUrl={originalImageUrl || preview || ''}
+            afterUrl={activeResult.resultUrl}
+          />
+
+          {/* Navigation between results */}
+          {results.length > 1 && (
+            <div className="flex items-center justify-center gap-2">
+              <Button
+                variant="ghost"
+                size="icon"
+                disabled={activeResultIndex === 0}
+                onClick={() => setActiveResultIndex((i) => i - 1)}
+              >
+                <ChevronLeft className="h-5 w-5" />
+              </Button>
+
+              <div className="flex gap-1.5 items-center">
+                {results.map((r, i) => (
+                  <button
+                    key={r.id}
+                    onClick={() => setActiveResultIndex(i)}
+                    className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium transition-colors ${
+                      i === activeResultIndex
+                        ? 'bg-brand-orange text-white'
+                        : 'bg-brand-peach-light text-brand-brown/60 hover:bg-brand-peach'
+                    }`}
+                  >
+                    <ProductSwatch
+                      brand={r.product.brand}
+                      line={extractLine(r.product)}
+                      color={r.product.color}
+                      swatchUrl={r.product.swatch_url}
+                      className="h-4 w-4 rounded-sm flex-shrink-0"
+                    />
+                    {r.product.color}
+                  </button>
+                ))}
+              </div>
+
+              <Button
+                variant="ghost"
+                size="icon"
+                disabled={activeResultIndex === results.length - 1}
+                onClick={() => setActiveResultIndex((i) => i + 1)}
+              >
+                <ChevronRight className="h-5 w-5" />
+              </Button>
+            </div>
+          )}
+
+          {/* Action buttons */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <Button variant="outline" onClick={handleTryAnother} className="h-12">
+              <RotateCcw className="mr-2 h-4 w-4" />
+              Try Another
+            </Button>
+            <Button variant="outline" onClick={handleDownload} className="h-12">
+              <Download className="mr-2 h-4 w-4" />
+              Download
+            </Button>
+            <Button variant="outline" onClick={handleStartOver} className="h-12 col-span-2 sm:col-span-1">
+              <ArrowLeft className="mr-2 h-4 w-4" />
+              New Photo
+            </Button>
+            <Button
+              onClick={() => router.push('/gallery')}
+              className="h-12 col-span-2 sm:col-span-1"
+            >
+              <FolderOpen className="mr-2 h-4 w-4" />
+              View in Gallery
+            </Button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

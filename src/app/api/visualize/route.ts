@@ -1,0 +1,201 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { createAdminClient } from '@/lib/supabase/admin';
+import { generateVisualization, detectPerspective } from '@/lib/openai';
+import { buildPrompt } from '@/lib/prompts';
+import { checkUsage, recordUsage } from '@/lib/usage';
+import { checkRateLimit, RATE_LIMITS, rateLimitResponse } from '@/lib/rate-limit';
+import { visualizeSchema, parseBody } from '@/lib/validation';
+
+export const maxDuration = 60; // Allow up to 60 seconds for OpenAI processing
+
+export async function POST(request: NextRequest) {
+  const supabase = await createClient();
+
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  const { data: profile } = await supabase
+    .from('profiles')
+    .select('tenant_id, role')
+    .eq('id', user.id)
+    .single();
+
+  if (!profile) {
+    return NextResponse.json({ error: 'Profile not found' }, { status: 404 });
+  }
+
+  // Rate limit by user
+  const adminSupabaseForUsage = createAdminClient();
+  const rateCheck = await checkRateLimit(adminSupabaseForUsage, user.id, '/api/visualize', RATE_LIMITS.visualize);
+  if (!rateCheck.allowed) return rateLimitResponse(rateCheck.retryAfterSeconds);
+
+  // Check usage limits
+  const usage = await checkUsage(adminSupabaseForUsage, profile.tenant_id, {
+    userId: user.id,
+    role: profile.role,
+  });
+  if (!usage.allowed) {
+    return NextResponse.json({
+      error: usage.message || 'Visualization limit reached. Please upgrade your plan.',
+      code: 'LIMIT_REACHED',
+      usage: { used: usage.used, limit: usage.limit, plan: usage.plan },
+    }, { status: 429 });
+  }
+
+  const body = await request.json();
+  const parsed = parseBody(visualizeSchema, body);
+  if (!parsed.success) {
+    return NextResponse.json({ error: parsed.error }, { status: 400 });
+  }
+  const { productId, originalImagePath, customerName, customerAddress, perspective, category } = parsed.data;
+
+  // Verify image path belongs to this tenant (prevent cross-tenant access)
+  if (!originalImagePath.startsWith(profile.tenant_id + '/')) {
+    return NextResponse.json({ error: 'Invalid image path' }, { status: 400 });
+  }
+
+  // Fetch the product
+  const { data: product, error: productError } = await supabase
+    .from('products')
+    .select('*')
+    .eq('id', productId)
+    .single();
+
+  if (productError || !product) {
+    return NextResponse.json({ error: 'Product not found' }, { status: 404 });
+  }
+
+  // Create visualization record
+  const { data: visualization, error: vizError } = await supabase
+    .from('visualizations')
+    .insert({
+      tenant_id: profile.tenant_id,
+      created_by: user.id,
+      product_id: productId,
+      customer_name: customerName || null,
+      customer_address: customerAddress || null,
+      original_image_path: originalImagePath,
+      perspective,
+      category,
+      status: 'processing',
+    })
+    .select()
+    .single();
+
+  if (vizError || !visualization) {
+    return NextResponse.json({ error: 'Failed to create visualization record' }, { status: 500 });
+  }
+
+  const adminSupabase = createAdminClient();
+  const startTime = Date.now();
+
+  try {
+    // Download the original image from storage
+    const { data: imageData, error: downloadError } = await adminSupabase.storage
+      .from('house-photos')
+      .download(originalImagePath);
+
+    if (downloadError || !imageData) {
+      throw new Error('Failed to download original image');
+    }
+
+    const imageBuffer = Buffer.from(await imageData.arrayBuffer());
+
+    // Auto-detect perspective from the photo
+    const detectedPerspective = await detectPerspective(imageBuffer);
+
+    // Update the visualization record with detected perspective
+    await adminSupabase
+      .from('visualizations')
+      .update({ perspective: detectedPerspective })
+      .eq('id', visualization.id);
+
+    // Build the prompt and call Gemini. If the product has a reference image
+    // (e.g. a manufacturer product photo), include it as a few-shot visual target.
+    //
+    // We skip the reference in two cases:
+    //   1. Light colors (White, Sandtone, Canvas, Wheat, etc.) — the reference
+    //      photo's white frames bleed through and Gemini defaults to white,
+    //      ignoring the prompt's color instruction.
+    //   2. Interior perspective — our Andersen reference photos are almost all
+    //      exterior shots. Feeding an exterior reference with an interior source
+    //      photo produces a context mismatch; Gemini can't resolve it and tends
+    //      to under-apply the color change. For interior shots the window is
+    //      close-up anyway, so the prompt's style description carries enough
+    //      detail without the reference.
+    const LIGHT_COLORS = new Set([
+      'white',
+      'sandtone',
+      'sandstone',
+      'canvas',
+      'wheat',
+      'almond',
+      'ivory',
+      'cream',
+      'off-white',
+    ]);
+    const colorKey = (product.color || '').toLowerCase().trim();
+    const skipReference =
+      LIGHT_COLORS.has(colorKey) || detectedPerspective === 'interior';
+
+    const prompt = buildPrompt(product, { perspective: detectedPerspective });
+    const resultBuffer = await generateVisualization(imageBuffer, prompt, {
+      referenceImageUrl: skipReference ? null : product.reference_image_url,
+    });
+
+    // Upload the result image
+    const resultPath = `${profile.tenant_id}/${visualization.id}/result.png`;
+    const { error: uploadError } = await adminSupabase.storage
+      .from('visualizations')
+      .upload(resultPath, resultBuffer, { contentType: 'image/png' });
+
+    if (uploadError) {
+      throw new Error('Failed to upload result image');
+    }
+
+    const processingTime = Date.now() - startTime;
+
+    // Update visualization record
+    await adminSupabase
+      .from('visualizations')
+      .update({
+        result_image_path: resultPath,
+        prompt_used: prompt,
+        status: 'completed',
+        processing_time_ms: processingTime,
+      })
+      .eq('id', visualization.id);
+
+    // Record usage
+    await recordUsage(adminSupabase, profile.tenant_id, visualization.id);
+
+    // Get result URL
+    const { data: urlData } = adminSupabase.storage
+      .from('visualizations')
+      .getPublicUrl(resultPath);
+
+    return NextResponse.json({
+      id: visualization.id,
+      resultUrl: urlData.publicUrl,
+      processingTimeMs: processingTime,
+    });
+  } catch (error) {
+    const processingTime = Date.now() - startTime;
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+
+    // Update visualization as failed
+    await adminSupabase
+      .from('visualizations')
+      .update({
+        status: 'failed',
+        error_message: errorMessage,
+        processing_time_ms: processingTime,
+      })
+      .eq('id', visualization.id);
+
+    return NextResponse.json({ error: errorMessage }, { status: 500 });
+  }
+}
