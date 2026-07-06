@@ -137,8 +137,9 @@ export async function recordUsage(
       period_end: periodEnd,
     });
 
-  // Check for high-usage alerts on Business Pro (or any high-tier plan)
-  if (subscription?.plan === 'business_pro') {
+  // Check for high-usage alerts on any paid plan with a finite limit
+  // (limit > 0 is enforced below; free is excluded to avoid noisy alerts).
+  if (subscription?.plan && subscription.plan !== 'free') {
     const { data: subFull } = await supabase
       .from('subscriptions')
       .select('visualization_limit')

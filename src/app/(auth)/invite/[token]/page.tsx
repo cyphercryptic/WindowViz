@@ -128,6 +128,9 @@ export default function InvitePage({ params }: { params: Promise<{ token: string
           <div className="space-y-2">
             <Label className="text-brand-brown/70 text-sm font-medium">Email</Label>
             <Input value={inviteEmail} disabled className="h-11 bg-brand-peach-light border-brand-peach/40" />
+            <p className="text-xs text-brand-brown/50">
+              Invites are tied to this address. Need a different one? Ask your admin to re-invite you.
+            </p>
           </div>
           <div className="space-y-2">
             <Label htmlFor="fullName" className="text-brand-brown/70 text-sm font-medium">Your Name</Label>

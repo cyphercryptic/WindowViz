@@ -4,8 +4,7 @@ import { createAdminClient } from '@/lib/supabase/admin';
 import { PDFDocument, rgb, StandardFonts } from 'pdf-lib';
 import { checkRateLimit, RATE_LIMITS, rateLimitResponse } from '@/lib/rate-limit';
 import { proposalSchema, parseBody } from '@/lib/validation';
-
-const PRO_PLANS = ['pro', 'business', 'business_pro'];
+import { canGeneratePdf } from '@/lib/plan-features';
 
 export async function POST(request: NextRequest) {
   try {
@@ -39,7 +38,7 @@ export async function POST(request: NextRequest) {
       .eq('tenant_id', profile.tenant_id)
       .single();
 
-    if (!subscription || !PRO_PLANS.includes(subscription.plan)) {
+    if (!subscription || !canGeneratePdf(subscription.plan)) {
       return NextResponse.json(
         { error: 'PDF proposals require a Pro plan or higher. Please upgrade to access this feature.', code: 'PLAN_REQUIRED' },
         { status: 403 }

@@ -7,7 +7,10 @@ import { checkUsage, recordUsage } from '@/lib/usage';
 import { checkRateLimit, RATE_LIMITS, rateLimitResponse } from '@/lib/rate-limit';
 import { visualizeSchema, parseBody } from '@/lib/validation';
 
-export const maxDuration = 60; // Allow up to 60 seconds for OpenAI processing
+// Image generation runs 20-30s per attempt with up to 3 attempts (see
+// lib/openai.ts); 300s is the Vercel default cap and gives comfortable
+// headroom so a timeout never strands a row in 'processing'.
+export const maxDuration = 300;
 
 export async function POST(request: NextRequest) {
   const supabase = await createClient();

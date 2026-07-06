@@ -1,5 +1,6 @@
 import { createAdminClient } from '@/lib/supabase/admin';
 import { notFound } from 'next/navigation';
+import { canWhiteLabel } from '@/lib/plan-features';
 import { SharePageClient } from './SharePageClient';
 
 interface SharePageProps {
@@ -45,14 +46,14 @@ export default async function SharePage({ params }: SharePageProps) {
     .eq('id', link.tenant_id)
     .single();
 
-  // Check if tenant has Business Pro for white-label
+  // Check if tenant's plan includes white-label branding
   const { data: subscription } = await supabase
     .from('subscriptions')
     .select('plan')
     .eq('tenant_id', link.tenant_id)
     .single();
 
-  const isWhiteLabel = subscription?.plan === 'business_pro';
+  const isWhiteLabel = canWhiteLabel(subscription?.plan);
 
   // Increment view count (fire and forget)
   supabase

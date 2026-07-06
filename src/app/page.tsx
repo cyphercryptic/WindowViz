@@ -17,10 +17,15 @@ import {
 import MobileNav from '@/components/landing/MobileNav';
 import HeroVisual from '@/components/landing/HeroVisual';
 import { DotRule, SectionNumber } from '@/components/landing/Ornament';
+import { TEAM_PRICING } from '@/lib/pricing';
 
 /* ------------------------------------------------------------------ */
-/*  Plan data (mirrored from billing + stripe for static rendering)   */
+/*  Plan data (Team pricing derived from lib/pricing.ts)              */
 /* ------------------------------------------------------------------ */
+const [teamBaseTier, ...teamVolumeTiers] = TEAM_PRICING.tiers;
+const volumeDiscountLabel = teamVolumeTiers
+  .map((tier, i) => `$${tier.pricePerSeat} at ${TEAM_PRICING.tiers[i].upTo + 1}+`)
+  .join(' • ');
 const PLANS = [
   {
     key: 'free',
@@ -28,8 +33,9 @@ const PLANS = [
     priceLabel: '$0',
     priceUnit: '/ mo',
     description: 'Try it out',
-    features: ['5 visualizations/month', '1 team member', 'Standard quality'],
+    features: ['5 visualizations/month', '1 user', 'Standard quality'],
     highlighted: false,
+    cta: { label: 'Start free', href: '/signup' },
   },
   {
     key: 'pay_per_use',
@@ -39,76 +45,46 @@ const PLANS = [
     description: 'No commitment',
     features: [
       'Unlimited visualizations',
-      '1 team member',
+      '1 user',
       'High quality',
       'Pay only for what you use',
     ],
     highlighted: false,
+    cta: { label: 'Get started', href: '/signup' },
   },
   {
-    key: 'starter',
-    name: 'Starter',
-    priceLabel: '$44',
-    priceUnit: '/ mo',
-    description: 'For solo reps',
-    features: [
-      '100 visualizations/month',
-      '3 team members',
-      'High quality',
-      'Email support',
-    ],
-    highlighted: false,
-  },
-  {
-    key: 'pro',
-    name: 'Pro',
-    priceLabel: '$99',
-    priceUnit: '/ mo',
+    key: 'team',
+    name: 'Team',
+    priceLabel: `$${teamBaseTier.pricePerSeat}`,
+    priceUnit: '/ seat / mo',
     description: 'Most popular',
     features: [
-      '250 visualizations/month',
-      '10 team members',
+      `${TEAM_PRICING.visualizationsPerSeat} visualizations / seat / month`,
+      'Unlimited team members',
       'High quality',
+      'Gallery sharing & PDF proposals',
       'Priority support',
-      'Gallery sharing',
-      'PDF proposals',
+      `Volume discounts: ${volumeDiscountLabel}`,
     ],
     highlighted: true,
+    cta: { label: 'Get started', href: '/signup' },
   },
   {
-    key: 'business',
-    name: 'Business',
-    priceLabel: '$299',
-    priceUnit: '/ mo',
-    description: 'For growing teams',
+    key: 'enterprise',
+    name: 'Enterprise',
+    priceLabel: 'Custom',
+    priceUnit: `${TEAM_PRICING.enterpriseSeatThreshold}+ seats`,
+    description: 'Tailored to your team',
     features: [
-      '1,000 visualizations/month',
+      'Unlimited visualizations',
       'Unlimited team members',
-      'High quality',
-      'Dedicated support',
-      'Gallery sharing',
-      'PDF proposals',
-      'Analytics dashboard',
-    ],
-    highlighted: false,
-  },
-  {
-    key: 'business_pro',
-    name: 'Business Pro',
-    priceLabel: '$1,199',
-    priceUnit: '/ mo',
-    description: 'Enterprise scale',
-    features: [
-      '5,000 visualizations/month',
-      'Unlimited team members',
-      'High quality',
-      'Dedicated support',
-      'Gallery sharing',
-      'PDF proposals',
-      'Analytics dashboard',
       'White-label branding',
+      'Dedicated support & SLAs',
+      'Custom onboarding & training',
+      'Annual contracts available',
     ],
     highlighted: false,
+    cta: { label: 'Contact sales', href: 'mailto:sales@windowviz.com?subject=Enterprise%20inquiry' },
   },
 ];
 
@@ -570,7 +546,7 @@ export default function LandingPage() {
               </p>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6">
               {PLANS.map((plan) => (
                 <div
                   key={plan.key}
@@ -651,14 +627,14 @@ export default function LandingPage() {
                   </ul>
 
                   <Link
-                    href="/signup"
+                    href={plan.cta.href}
                     className={`inline-flex items-center justify-center gap-2 rounded-full py-3 font-mono text-[10px] tracking-[0.24em] uppercase transition-colors ${
                       plan.highlighted
                         ? 'bg-brand-oxblood text-brand-cream hover:bg-brand-oxblood-dark'
                         : 'border border-brand-ink/30 text-brand-ink hover:bg-brand-ink hover:text-brand-cream hover:border-brand-ink'
                     }`}
                   >
-                    Get started
+                    {plan.cta.label}
                     <ArrowRight className="h-3.5 w-3.5" />
                   </Link>
                 </div>

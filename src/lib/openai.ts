@@ -67,8 +67,11 @@ export async function generateVisualization(
 ): Promise<Buffer> {
   const base64Image = imageBuffer.toString('base64');
 
+  // Nano Banana 2 — released Feb 2026. Materially better prompt adherence,
+  // text rendering, and color fidelity than gemini-2.5-flash-image (the
+  // previous model). Same SDK, same auth, ~$0.065/image (vs $0.04 before).
   const model = genAI.getGenerativeModel({
-    model: 'gemini-2.5-flash-image',
+    model: 'gemini-3.1-flash-image-preview',
     generationConfig: {
       // @ts-expect-error - responseModalities is supported but not in types yet
       responseModalities: ['TEXT', 'IMAGE'],
@@ -108,9 +111,13 @@ export async function generateVisualization(
     return parts;
   };
 
-  const maxAttempts = 4;
-  // Backoff schedule: 2s, 5s, 12s between attempts
-  const backoffs = [2000, 5000, 12000];
+  // Nano Banana 2 takes 20-30s per call (harder colors / contrasts can spike
+  // higher). The visualize route sets maxDuration = 300, which leaves room
+  // for a couple of retries on transient 429/503s without risking a hard
+  // platform timeout.
+  const maxAttempts = 3;
+  // Backoff schedule between attempts
+  const backoffs = [2000, 5000];
   let lastErr: unknown;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {

@@ -35,6 +35,21 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'This invite has expired' }, { status: 410 });
   }
 
+  // Bind the invite to its intended recipient: the auth user being attached
+  // must exist and their email must match the invited address. Without this,
+  // anyone holding a leaked invite link could join the tenant (with the
+  // invite's role) under an arbitrary email.
+  const { data: authUser, error: authUserError } = await supabase.auth.admin.getUserById(userId);
+  if (authUserError || !authUser?.user) {
+    return NextResponse.json({ error: 'Account not found' }, { status: 404 });
+  }
+  if ((authUser.user.email || '').toLowerCase() !== (invite.email || '').toLowerCase()) {
+    return NextResponse.json(
+      { error: 'This invite was sent to a different email address. Please sign up with the invited email or ask for a new invite.' },
+      { status: 403 }
+    );
+  }
+
   // Whitelist allowed roles
   const allowedRoles = ['rep', 'admin', 'demo'];
   const role = allowedRoles.includes(invite.role) ? invite.role : 'rep';

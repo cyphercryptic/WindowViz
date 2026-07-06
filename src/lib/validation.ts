@@ -78,7 +78,9 @@ export const inviteSendSchema = z.object({
 });
 
 export const billingCheckoutSchema = z.object({
-  plan: z.enum(['pay_per_use', 'starter', 'pro', 'business', 'business_pro']),
+  plan: z.enum(['pay_per_use', 'starter', 'pro', 'business', 'business_pro', 'team']),
+  /** Required when plan === 'team'. 1–500. >500 routes to enterprise (sales). */
+  seats: z.number().int().min(1).max(500).optional(),
 });
 
 // --- Helper ---

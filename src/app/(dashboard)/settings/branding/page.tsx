@@ -10,6 +10,7 @@ import { Label } from '@/components/ui/label';
 import { Paintbrush, Shield, Upload, ArrowRight, Image as ImageIcon } from 'lucide-react';
 import { toast } from 'sonner';
 import Link from 'next/link';
+import { canWhiteLabel } from '@/lib/plan-features';
 import type { Tenant } from '@/types';
 
 export default function BrandingPage() {
@@ -143,7 +144,7 @@ export default function BrandingPage() {
     );
   }
 
-  if (plan !== 'business_pro') {
+  if (!canWhiteLabel(plan)) {
     return (
       <div className="max-w-2xl mx-auto">
         <div className="mb-6">
@@ -154,14 +155,14 @@ export default function BrandingPage() {
         <Card>
           <CardContent className="flex flex-col items-center py-12 text-center">
             <Paintbrush className="h-12 w-12 text-brand-brown/30 mb-4" />
-            <h2 className="text-lg font-semibold mb-2">Business Pro Feature</h2>
+            <h2 className="text-lg font-semibold mb-2">Business Pro & Enterprise Feature</h2>
             <p className="text-brand-brown/50 mb-6 max-w-md">
-              White-label branding is available on the Business Pro plan. Customize colors,
-              upload your logo, and remove WindowViz branding from shared pages.
+              White-label branding is available on Business Pro and Enterprise plans. Customize
+              colors, upload your logo, and remove WindowViz branding from shared pages.
             </p>
             <Link href="/settings/billing">
               <Button>
-                Upgrade to Business Pro
+                Upgrade your plan
                 <ArrowRight className="ml-2 h-4 w-4" />
               </Button>
             </Link>

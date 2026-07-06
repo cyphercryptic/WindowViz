@@ -6,6 +6,7 @@ import { checkRateLimit, RATE_LIMITS, rateLimitResponse } from '@/lib/rate-limit
 import { inviteSendSchema, parseBody } from '@/lib/validation';
 import { sendInviteEmail } from '@/lib/email';
 import { PLANS } from '@/lib/stripe';
+import { hasUnlimitedMembers } from '@/lib/plan-features';
 
 export async function POST(request: NextRequest) {
   // Authenticate user
@@ -50,9 +51,13 @@ export async function POST(request: NextRequest) {
     .eq('tenant_id', profile.tenant_id)
     .single();
 
-  const plan = (subscription?.plan || 'free') as keyof typeof PLANS;
-  const planConfig = PLANS[plan];
-  const teamLimit = planConfig?.teamMemberLimit ?? 1;
+  const plan = subscription?.plan || 'free';
+  // Team/Enterprise are per-seat plans that live outside PLANS and have no
+  // member cap; legacy plans read their cap from PLANS. Unknown plans fall
+  // back to 1 rather than crashing.
+  const planConfig = plan in PLANS ? PLANS[plan as keyof typeof PLANS] : null;
+  const planName = planConfig?.name ?? (plan === 'team' ? 'Team' : plan === 'enterprise' ? 'Enterprise' : plan);
+  const teamLimit = hasUnlimitedMembers(plan) ? -1 : planConfig?.teamMemberLimit ?? 1;
 
   if (teamLimit !== -1) {
     // Count current team members (profiles) + pending invites
@@ -70,7 +75,7 @@ export async function POST(request: NextRequest) {
     const totalMembers = (memberCount || 0) + (pendingInviteCount || 0);
     if (totalMembers >= teamLimit) {
       return NextResponse.json(
-        { error: `Your ${planConfig.name} plan allows up to ${teamLimit} team member${teamLimit === 1 ? '' : 's'}. Please upgrade to add more.` },
+        { error: `Your ${planName} plan allows up to ${teamLimit} team member${teamLimit === 1 ? '' : 's'}. Please upgrade to add more.` },
         { status: 403 }
       );
     }

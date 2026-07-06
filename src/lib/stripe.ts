@@ -1,4 +1,5 @@
 import Stripe from 'stripe';
+import { TEAM_PRICING } from './pricing';
 
 export const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
   apiVersion: '2026-03-25.dahlia',
@@ -100,3 +101,16 @@ export const PLANS = {
 } as const;
 
 export type PlanKey = keyof typeof PLANS;
+
+/**
+ * Per-seat Team plan. Pricing tiers live in lib/pricing.ts (client-safe,
+ * shared with the billing configurator and landing page); this adds the
+ * server-only Stripe price ID.
+ */
+export const TEAM_PLAN = {
+  name: 'Team',
+  stripePriceId: process.env.STRIPE_PRICE_TEAM,
+  ...TEAM_PRICING,
+} as const;
+
+export { getTeamSeatPrice } from './pricing';

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { createAdminClient } from '@/lib/supabase/admin';
-import { stripe, PLANS } from '@/lib/stripe';
+import { stripe, PLANS, TEAM_PLAN } from '@/lib/stripe';
 import { checkRateLimit, RATE_LIMITS, rateLimitResponse } from '@/lib/rate-limit';
 import { billingCheckoutSchema, parseBody } from '@/lib/validation';
 
@@ -33,10 +33,37 @@ export async function POST(request: NextRequest) {
   if (!parsed.success) {
     return NextResponse.json({ error: parsed.error }, { status: 400 });
   }
-  const plan = parsed.data.plan;
+  const { plan, seats: seatsInput } = parsed.data;
 
-  const planConfig = PLANS[plan];
-  if (!planConfig.stripePriceId) {
+  // Resolve the Stripe price + quantity for this checkout.
+  // Team plan uses the volume-tiered price with `quantity = seats`.
+  // Legacy plans use their fixed price with quantity 1.
+  let stripePriceId: string | null | undefined;
+  let quantity = 1;
+
+  if (plan === 'team') {
+    if (!seatsInput || seatsInput < 1) {
+      return NextResponse.json(
+        { error: 'Seats are required for the Team plan' },
+        { status: 400 }
+      );
+    }
+    if (seatsInput > TEAM_PLAN.enterpriseSeatThreshold) {
+      return NextResponse.json(
+        {
+          error:
+            'Teams over 500 seats use enterprise pricing — please contact sales@windowviz.com.',
+        },
+        { status: 400 }
+      );
+    }
+    stripePriceId = TEAM_PLAN.stripePriceId;
+    quantity = seatsInput;
+  } else {
+    stripePriceId = PLANS[plan].stripePriceId;
+  }
+
+  if (!stripePriceId) {
     return NextResponse.json({ error: 'Plan not configured' }, { status: 400 });
   }
 
@@ -48,6 +75,32 @@ export async function POST(request: NextRequest) {
     .select('*')
     .eq('tenant_id', profile.tenant_id)
     .single();
+
+  // Never create a second subscription for a tenant that already has one —
+  // a fresh checkout would leave the old subscription active and billing.
+  if (subscription?.stripe_subscription_id) {
+    if (plan === 'team' && subscription.plan === 'team') {
+      // Seat change: update the existing subscription's quantity in place.
+      // The customer.subscription.updated webhook recomputes seats + limit.
+      const stripeSub = await stripe.subscriptions.retrieve(subscription.stripe_subscription_id);
+      const item = stripeSub.items.data[0];
+      if (!item) {
+        return NextResponse.json({ error: 'Subscription has no items to update' }, { status: 500 });
+      }
+      await stripe.subscriptions.update(subscription.stripe_subscription_id, {
+        items: [{ id: item.id, quantity }],
+        proration_behavior: 'create_prorations',
+      });
+      return NextResponse.json({ updated: true, seats: quantity });
+    }
+    return NextResponse.json(
+      {
+        error: 'You already have an active subscription. Use Manage Billing to change plans.',
+        code: 'USE_PORTAL',
+      },
+      { status: 409 }
+    );
+  }
 
   let customerId = subscription?.stripe_customer_id;
 
@@ -72,17 +125,34 @@ export async function POST(request: NextRequest) {
       .eq('tenant_id', profile.tenant_id);
   }
 
-  // Pay-per-use uses subscription mode with metered billing
-  // Regular plans use standard subscription mode
+  // Build line items. Team plan uses adjustable_quantity so the customer can
+  // change seat count from the Stripe portal post-checkout. Pay-per-use is a
+  // metered price — Stripe rejects a quantity for those — legacy plans are
+  // fixed quantity 1.
+  const lineItem: import('stripe').Stripe.Checkout.SessionCreateParams.LineItem = {
+    price: stripePriceId,
+    ...(plan === 'pay_per_use' ? {} : { quantity }),
+  };
+
+  if (plan === 'team') {
+    lineItem.adjustable_quantity = {
+      enabled: true,
+      minimum: 1,
+      maximum: TEAM_PLAN.enterpriseSeatThreshold,
+    };
+  }
+
   const session = await stripe.checkout.sessions.create({
     customer: customerId,
     mode: 'subscription',
-    line_items: [{ price: planConfig.stripePriceId, quantity: 1 }],
+    line_items: [lineItem],
     success_url: `${request.nextUrl.origin}/settings/billing?success=true`,
     cancel_url: `${request.nextUrl.origin}/settings/billing?canceled=true`,
     metadata: {
       tenant_id: profile.tenant_id,
       plan,
+      // Echo requested seats so the webhook can persist it without re-fetching.
+      ...(plan === 'team' ? { seats: String(quantity) } : {}),
     },
   });
 

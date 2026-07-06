@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { checkRateLimit, RATE_LIMITS, rateLimitResponse } from '@/lib/rate-limit';
+import { canViewAnalytics } from '@/lib/plan-features';
 
 export async function GET() {
   const supabase = await createClient();
@@ -40,7 +41,7 @@ export async function GET() {
     .eq('tenant_id', profile.tenant_id)
     .single();
 
-  if (!subscription || (subscription.plan !== 'business' && subscription.plan !== 'business_pro')) {
+  if (!subscription || !canViewAnalytics(subscription.plan)) {
     return NextResponse.json(
       { error: 'Analytics is available on Business plans and above' },
       { status: 403 }

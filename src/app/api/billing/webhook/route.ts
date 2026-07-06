@@ -1,7 +1,42 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { stripe, PLANS, type PlanKey } from '@/lib/stripe';
+import { stripe, PLANS, TEAM_PLAN, type PlanKey } from '@/lib/stripe';
 import { createAdminClient } from '@/lib/supabase/admin';
 import type Stripe from 'stripe';
+
+/** Pull seat quantity off the first subscription item (Team plan). */
+function getSeats(sub: Stripe.Subscription): number {
+  return sub.items.data[0]?.quantity ?? 1;
+}
+
+/** Visualization limit for a given plan + seats. -1 = unlimited. */
+function computeLimit(plan: PlanKey | 'team', seats: number): number {
+  if (plan === 'team') return seats * TEAM_PLAN.visualizationsPerSeat;
+  return PLANS[plan as PlanKey].visualizationLimit;
+}
+
+/**
+ * Map a Stripe subscription to our status enum. Scheduled cancellation keeps
+ * the existing 'canceled' semantics; otherwise the real Stripe status wins so
+ * a past_due row is never silently flipped back to active by an unrelated
+ * subscription.updated event (e.g. a dunning retry).
+ */
+function mapStatus(sub: Stripe.Subscription): 'active' | 'past_due' | 'canceled' | 'trialing' | 'incomplete' {
+  if (sub.cancel_at_period_end) return 'canceled';
+  switch (sub.status) {
+    case 'trialing':
+      return 'trialing';
+    case 'past_due':
+    case 'unpaid':
+      return 'past_due';
+    case 'canceled':
+      return 'canceled';
+    case 'incomplete':
+    case 'incomplete_expired':
+      return 'incomplete';
+    default:
+      return 'active';
+  }
+}
 
 /** Extract billing period from the first subscription item */
 function getPeriod(sub: Stripe.Subscription) {
@@ -45,13 +80,27 @@ export async function POST(request: NextRequest) {
     case 'checkout.session.completed': {
       const session = event.data.object;
       const tenantId = session.metadata?.tenant_id;
-      const plan = session.metadata?.plan as PlanKey;
+      const planMeta = session.metadata?.plan;
 
-      if (!tenantId || !plan) break;
+      if (!tenantId || !planMeta) break;
+
+      // Metadata is unvalidated input: sessions can be created outside the
+      // app flow (dashboard, future tooling). Skip unknown plans instead of
+      // crashing into a Stripe retry loop.
+      if (planMeta !== 'team' && !(planMeta in PLANS)) {
+        console.error(`Webhook: unknown plan "${planMeta}" in checkout session metadata; skipping`);
+        break;
+      }
+      const plan = planMeta as PlanKey | 'team';
 
       const subscriptionId = session.subscription as string;
       const stripeSub = await stripe.subscriptions.retrieve(subscriptionId);
       const period = getPeriod(stripeSub);
+
+      // Team plan: read seat count from the subscription item quantity.
+      // Other plans: 1 seat (legacy fixed-tier).
+      const seats = plan === 'team' ? getSeats(stripeSub) : 1;
+      const limit = computeLimit(plan, seats);
 
       await adminSupabase
         .from('subscriptions')
@@ -60,7 +109,8 @@ export async function POST(request: NextRequest) {
           stripe_customer_id: session.customer as string,
           plan,
           status: 'active',
-          visualization_limit: PLANS[plan].visualizationLimit,
+          seats,
+          visualization_limit: limit,
           current_period_start: period.start,
           current_period_end: period.end,
         })
@@ -115,15 +165,31 @@ export async function POST(request: NextRequest) {
       const customerId = subscription.customer as string;
       const period = getPeriod(subscription);
 
-      const status = subscription.cancel_at_period_end ? 'canceled' : 'active';
+      const status = mapStatus(subscription);
+
+      // Find the existing row to know whether this is a Team subscription
+      // (so we can recompute limit from the new seat count).
+      const { data: existing } = await adminSupabase
+        .from('subscriptions')
+        .select('plan')
+        .eq('stripe_customer_id', customerId)
+        .single();
+
+      const updates: Record<string, unknown> = {
+        status,
+        current_period_start: period.start,
+        current_period_end: period.end,
+      };
+
+      if (existing?.plan === 'team') {
+        const seats = getSeats(subscription);
+        updates.seats = seats;
+        updates.visualization_limit = computeLimit('team', seats);
+      }
 
       await adminSupabase
         .from('subscriptions')
-        .update({
-          status,
-          current_period_start: period.start,
-          current_period_end: period.end,
-        })
+        .update(updates)
         .eq('stripe_customer_id', customerId);
 
       break;
@@ -139,6 +205,7 @@ export async function POST(request: NextRequest) {
         .update({
           plan: 'free',
           status: 'active',
+          seats: 1,
           visualization_limit: PLANS.free.visualizationLimit,
           stripe_subscription_id: null,
           current_period_start: null,
