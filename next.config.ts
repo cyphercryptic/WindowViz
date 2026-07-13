@@ -6,14 +6,6 @@ const nextConfig: NextConfig = {
     remotePatterns: [
       {
         protocol: 'https',
-        hostname: 'gqqvxzxzuaevsuwazaqx.supabase.co',
-      },
-      {
-        protocol: 'https',
-        hostname: 'assets.roofle.com',
-      },
-      {
-        protocol: 'https',
         hostname: 'imagecdn.owenscorning.com',
       },
     ],

@@ -101,7 +101,7 @@ async function countCurrentUsage(
     .select('*', { count: 'exact', head: true })
     .eq('tenant_id', tenantId)
     .gte('period_start', periodStart)
-    .lt('period_end', periodEnd);
+    .lte('period_end', periodEnd);
 
   return count || 0;
 }
@@ -152,7 +152,7 @@ export async function recordUsage(
         .select('*', { count: 'exact', head: true })
         .eq('tenant_id', tenantId)
         .gte('period_start', periodStart)
-        .lt('period_end', periodEnd);
+        .lte('period_end', periodEnd);
 
       const used = currentCount || 0;
       const limit = subFull.visualization_limit;

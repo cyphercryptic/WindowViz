@@ -121,20 +121,25 @@ export default function VisualizePage() {
     const formData = new FormData();
     formData.append('file', file);
 
-    const res = await fetch('/api/upload', { method: 'POST', body: formData });
+    try {
+      const res = await fetch('/api/upload', { method: 'POST', body: formData });
 
-    if (!res.ok) {
-      toast.error('Failed to upload photo');
+      if (!res.ok) {
+        toast.error('Failed to upload photo');
+        setPreview(null);
+        return;
+      }
+
+      const data = await res.json();
+      setOriginalImagePath(data.path);
+      setOriginalImageUrl(data.url);
+      setStep('category');
+    } catch {
+      toast.error('Failed to upload photo. Check your connection and try again.');
       setPreview(null);
+    } finally {
       setUploading(false);
-      return;
     }
-
-    const data = await res.json();
-    setOriginalImagePath(data.path);
-    setOriginalImageUrl(data.url);
-    setUploading(false);
-    setStep('category');
   }
 
   function handleClearPhoto() {
@@ -142,6 +147,8 @@ export default function VisualizePage() {
     setOriginalImagePath('');
     setOriginalImageUrl('');
     setCategory(null);
+    setResults([]);
+    setActiveResultIndex(0);
     setStep('upload');
   }
 
